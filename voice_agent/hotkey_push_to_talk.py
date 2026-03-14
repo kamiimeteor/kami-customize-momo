@@ -7,13 +7,16 @@ import sounddevice as sd
 import numpy as np
 import whisper
 from pynput import keyboard
-from voice_agent.droidrun_runner import run_droidrun_command
+from voice_agent.audio_input import describe_input_device, resolve_input_device
+from voice_agent.conversation import process_user_command
+from voice_agent.persona import startup_banner
 
 RATE = 16000
 model = whisper.load_model("small")
 
 recording = False
 audio_chunks = []
+stream = None
 
 def callback(indata, frames, time, status):
     if recording:
@@ -42,13 +45,25 @@ def toggle_recording():
         print("🧠:", text)
 
         if text and "退出" not in text:
-            run_droidrun_command(text)
+            process_user_command(text, source="push_to_talk")
 
 def on_activate():
     toggle_recording()
 
 def main() -> int:
+    global stream
+
+    try:
+        input_device = resolve_input_device(RATE, channels=1, dtype="int16")
+    except Exception as e:
+        print(f"Microphone initialization failed: {e}")
+        return 1
+
+    print(startup_banner())
+    print(f"🎤 Using input device: {describe_input_device(input_device)}")
+
     stream = sd.InputStream(
+        device=input_device,
         samplerate=RATE,
         channels=1,
         dtype="int16",
@@ -72,8 +87,9 @@ def main() -> int:
             print("⌨️ Press Command + Shift + K once to start, press again to stop and run")
             listener.join()
     finally:
-        stream.stop()
-        stream.close()
+        if stream is not None:
+            stream.stop()
+            stream.close()
 
     return 0
 

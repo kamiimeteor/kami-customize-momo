@@ -181,6 +181,25 @@ Important notes:
 - the default shell scripts prefer `$HOME/droidrun-env/bin/python` and `$HOME/droidrun-env/bin/droidrun`
 - if your setup differs, override the paths with environment variables instead of editing every script
 
+Persona settings live under `agent/`:
+
+- `agent/CONFIG.json` stores structured runtime settings such as role, tone, and initiative policy
+- `agent/*.md` stores the longer-form identity, rules, and user model
+- inspect the active merged profile with `python3 -m momo_cli.persona`
+- inspect the current long-term memory snapshot with `python3 -m momo_cli.memory_profile`
+
+Reply layer:
+
+- Momo now generates a short spoken/text reply before and after each command
+- the reply chain reuses the same LLM configuration that DroidRun already uses in `config.yaml`
+- long-term preferences are extracted into `memory/facts.jsonl` and merged into `memory/profile.json`
+- resolved preference overrides such as reply length and confirmation style now directly affect reply generation
+- by default, momo stays silent unless the recognized speech looks like an actionable command
+- voice playback supports `openai` and `system`; the current default is `openai`
+- OpenAI playback requires `OPENAI_API_KEY`
+- if OpenAI TTS fails, it falls back to the built-in macOS `say` command
+- you can still override playback temporarily with `MOMO_SPEECH_ENABLED=1` or `MOMO_SPEECH_PROVIDER=system`
+
 Example:
 
 ```bash
@@ -198,6 +217,20 @@ No active window or root filtered out
 ```
 
 This usually means Portal cannot read the current UI state, not that the natural-language command itself is wrong.
+
+If you see this instead:
+
+```text
+Portal state check failed: Accessibility service not available
+```
+
+that means Android currently does not have the `Droidrun Portal` accessibility service bound. Run:
+
+```bash
+./fix_portal.sh
+```
+
+If it still fails after that, keep the phone unlocked, open Android Accessibility settings, and confirm `Droidrun Portal` shows as enabled.
 
 Try:
 
@@ -231,18 +264,36 @@ Or start the toggle hotkey listener:
 
 ```text
 .
+├── agent/
+│   ├── CONFIG.json
+│   ├── IDENTITY.md / SOUL.md / USER.md / RULES.md / HEARTBEAT.md
+│   └── README.md
 ├── config.yaml
 ├── run*.sh
 ├── fix_portal.sh
 ├── hide_overlay.sh / show_overlay.sh / toggle_overlay.sh
-├── hotkey_*.py
-├── voice_agent_*.py
+├── momo_cli/
+│   ├── heartbeat.py
+│   ├── hotkey_*.py
+│   ├── hide_overlay.py / show_overlay.py / toggle_overlay.py
+│   ├── voice_agent_loop.py
+│   ├── voice_agent_once.py
+│   └── voice_test.py
+├── memory/
+│   ├── facts.jsonl
+│   ├── profile.json
+│   └── heartbeat/latest.md
 ├── voice_agent/
 │   ├── droidrun_runner.py
 │   ├── droidrun_open_app.py
+│   ├── conversation.py
+│   ├── llm_worker.py
+│   ├── memory.py
 │   ├── hotkey_push_to_talk.py
 │   ├── hotkey_voice_agent.py
+│   ├── persona.py
 │   ├── portal_overlay.py
+│   ├── speech_output.py
 │   ├── voice_agent.py
 │   └── voice_agent_loop.py
 └── 用户操作手册.md
