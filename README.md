@@ -76,8 +76,8 @@ If your local environment differs, you can override the default paths with:
 Clone the repo and enter the project directory:
 
 ```bash
-git clone https://github.com/kamiimeteor/kami-customize-momo.git
-cd kami-customize-momo
+git clone https://github.com/kamiimeteor/kami-customize-momo.git "$HOME/Documents/AI_projects/momo-droidrun"
+cd "$HOME/Documents/AI_projects/momo-droidrun"
 ```
 
 Install the system dependencies you need on macOS:
