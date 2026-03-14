@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-PROJECT_DIR="/Users/kamiiamazing/Library/Application Support/droidrun"
+PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 PYTHON_BIN="${DROIDRUN_PYTHON:-$HOME/droidrun-env/bin/python}"
 
 cd "$PROJECT_DIR"

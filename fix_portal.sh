@@ -2,7 +2,7 @@
 
 set -euo pipefail
 
-PROJECT_DIR="/Users/kamiiamazing/Library/Application Support/droidrun"
+PROJECT_DIR="$(cd "$(dirname "$0")" && pwd)"
 DROIDRUN_BIN="${DROIDRUN_BIN:-$HOME/droidrun-env/bin/droidrun}"
 ADB_BIN="${ADB_BIN:-/opt/homebrew/bin/adb}"
 
