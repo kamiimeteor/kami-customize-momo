@@ -242,6 +242,18 @@ def _fallback_after_action(user_text: str, result: CommandExecutionResult) -> st
         return _compress_reply(reply)
 
     detail = (result.detail or "").lower()
+    if "app_ui_unreadable_known" in detail:
+        reply = "这个 App 的当前页面已经打开了，但我还是读不到界面。"
+        if "微信" in (result.detail or ""):
+            reply = "微信已经打开了，但它这个页面我现在还是读不到。"
+        if _initiative_style_pref() == "proactive":
+            reply = reply.rstrip("。") + "，先换个页面或者先换个 App 试更稳。"
+        return _compress_reply(reply)
+    if "app_ui_unreadable" in detail:
+        reply = "这个 App 已经打开了，但当前页面还是读不到。"
+        if _initiative_style_pref() == "proactive":
+            reply = "这个 App 已经打开了，但当前页面还是读不到。你先换个页面再试。"
+        return _compress_reply(reply)
     if "portal_recovery" in detail or "portal_not_ready_after_recovery" in detail:
         reply = "微信已经打开了，但 Portal 还是读不到界面。"
         if _initiative_style_pref() == "proactive":

@@ -7,10 +7,15 @@ import time
 from dataclasses import dataclass
 from pathlib import Path
 
+from voice_agent.diagnostics import (
+    NO_ACTIVE_WINDOW_ERROR,
+    PORTAL_A11Y_SERVICE,
+    open_app_via_helper,
+    probe_expected_app_readability,
+)
+
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 CONFIG_PATH = PROJECT_ROOT / "config.yaml"
-NO_ACTIVE_WINDOW_ERROR = "No active window or root filtered out"
-PORTAL_A11Y_SERVICE = "com.droidrun.portal/.service.DroidrunAccessibilityService"
 
 
 @dataclass(frozen=True)
@@ -277,19 +282,7 @@ def _split_embedded_follow_up(remainder: str) -> tuple[str | None, str | None]:
 
 
 def _direct_open_app(app_name: str) -> bool:
-    override = os.environ.get("DROIDRUN_PYTHON")
-    if override:
-        python_bin = override
-    else:
-        fallback = Path.home() / "droidrun-env" / "bin" / "python"
-        if fallback.exists():
-            python_bin = str(fallback)
-        else:
-            python_bin = _resolve_executable("DROIDRUN_PYTHON", "python", None)
-
-    helper_script = Path(__file__).resolve().parent / "droidrun_open_app.py"
-    result = subprocess.run([python_bin, str(helper_script), app_name], check=False)
-    return result.returncode == 0
+    return open_app_via_helper(app_name)
 
 
 def _run_droidrun(command: str) -> int:
@@ -347,8 +340,16 @@ def _attempt_portal_recovery(
                 if not _direct_open_app(app_name):
                     return False, f"direct_open_failed_after_recovery: {app_name}"
                 if not _wait_for_portal_ready(timeout_seconds=timeout_seconds):
+                    unreadable, unreadable_detail = probe_expected_app_readability(app_name)
+                    if unreadable:
+                        return False, unreadable_detail
                     return False, f"portal_not_ready_after_recovery_reopen: {app_name}"
             return True, None
+
+        if app_name:
+            unreadable, unreadable_detail = probe_expected_app_readability(app_name)
+            if unreadable:
+                return False, unreadable_detail
 
     if not _run_droidrun_setup():
         return False, "portal_recovery_setup_failed"
@@ -358,6 +359,9 @@ def _attempt_portal_recovery(
 
     if not _wait_for_portal_ready(timeout_seconds=timeout_seconds):
         if app_name:
+            unreadable, unreadable_detail = probe_expected_app_readability(app_name)
+            if unreadable:
+                return False, unreadable_detail
             _press_home()
             time.sleep(1.0)
             print(f"Re-opening '{app_name}' after Portal recovery...")
@@ -365,6 +369,9 @@ def _attempt_portal_recovery(
                 return False, f"direct_open_failed_after_recovery: {app_name}"
             if _wait_for_portal_ready(timeout_seconds=timeout_seconds):
                 return True, None
+            unreadable, unreadable_detail = probe_expected_app_readability(app_name)
+            if unreadable:
+                return False, unreadable_detail
         return False, f"portal_recovery_not_ready: {app_name or 'unknown_app'}"
 
     if app_name:
@@ -374,6 +381,9 @@ def _attempt_portal_recovery(
         if not _direct_open_app(app_name):
             return False, f"direct_open_failed_after_recovery: {app_name}"
         if not _wait_for_portal_ready(timeout_seconds=timeout_seconds):
+            unreadable, unreadable_detail = probe_expected_app_readability(app_name)
+            if unreadable:
+                return False, unreadable_detail
             return False, f"portal_not_ready_after_recovery_reopen: {app_name}"
 
     return True, None
@@ -393,6 +403,9 @@ def _prime_target_app_context(
         return False, f"direct_open_failed: {app_name}"
 
     if not _wait_for_portal_ready(timeout_seconds=timeout_seconds):
+        unreadable, unreadable_detail = probe_expected_app_readability(app_name)
+        if unreadable:
+            return False, unreadable_detail
         recovered, detail = _attempt_portal_recovery(app_name=app_name)
         if not recovered:
             return False, detail or f"portal_not_ready_after_open: {app_name}"
@@ -406,8 +419,12 @@ def run_droidrun_command_result(command: str) -> CommandExecutionResult:
     if ready:
         primed, detail = _prime_target_app_context(command)
         if not primed:
-            print("Opened the target app, but Portal still is not ready.")
-            print("Keep the app in the foreground and try again.")
+            if detail and "app_ui_unreadable" in detail:
+                print("Opened the target app, but Portal still cannot read this app screen.")
+                print("Try a different page in the app, or switch to a more compatible app.")
+            else:
+                print("Opened the target app, but Portal still is not ready.")
+                print("Keep the app in the foreground and try again.")
             return CommandExecutionResult(
                 exit_code=1,
                 status="failed",
@@ -468,6 +485,15 @@ def run_droidrun_command_result(command: str) -> CommandExecutionResult:
         )
 
     if not _wait_for_portal_ready():
+        unreadable, unreadable_detail = probe_expected_app_readability(app_name)
+        if unreadable:
+            print("Opened the app, but Portal cannot read the current screen for this app.")
+            print("Try a different page in the app, or switch to a more compatible app.")
+            return CommandExecutionResult(
+                exit_code=1,
+                status="failed",
+                detail=unreadable_detail,
+            )
         recovered, detail = _attempt_portal_recovery(app_name=app_name)
         if not recovered:
             print("Opened the app, but Portal still cannot read the UI.")

@@ -143,6 +143,12 @@ Reinstall and recover Portal:
 ./fix_portal.sh
 ```
 
+Run a one-shot health check:
+
+```bash
+./run_doctor.sh
+```
+
 Hide the overlay:
 
 ```bash
@@ -206,6 +212,14 @@ Example:
 DROIDRUN_PYTHON=/path/to/python ./run.sh
 ```
 
+Doctor examples:
+
+```bash
+./run_doctor.sh
+./run_doctor.sh --app 微信
+./run_doctor.sh --app 小红书 --open-app
+```
+
 ## Troubleshooting
 
 ### DroidRun opens the app but does not continue
@@ -217,6 +231,8 @@ No active window or root filtered out
 ```
 
 This usually means Portal cannot read the current UI state, not that the natural-language command itself is wrong.
+
+If `./run_doctor.sh --app 微信 --open-app` shows `likely_unreadable=True`, that means the phone did open WeChat but Portal still could not get a usable accessibility root from the current WeChat page. On this device, WeChat is currently treated as a restricted app, while Xiaohongshu is known to work.
 
 If you see this instead:
 
