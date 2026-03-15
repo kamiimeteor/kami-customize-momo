@@ -149,6 +149,15 @@ Run a one-shot health check:
 ./run_doctor.sh
 ```
 
+The doctor now checks:
+
+- runtime Python path and version
+- required Python modules for Momo and DroidRun
+- `adb`, `droidrun`, and `ffmpeg`
+- configured LLM providers and whether their API keys are visible in the current shell
+- OpenAI TTS readiness
+- Portal accessibility state and current foreground app readability
+
 Hide the overlay:
 
 ```bash
@@ -219,6 +228,8 @@ Doctor examples:
 ./run_doctor.sh --app 微信
 ./run_doctor.sh --app 小红书 --open-app
 ```
+
+The last section of the output is `recommendations`, which tells you the next concrete fix instead of just printing raw state.
 
 ## Troubleshooting
 

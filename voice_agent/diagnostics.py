@@ -80,6 +80,42 @@ class AppReadinessReport:
         }
 
 
+@dataclass(frozen=True)
+class CommandProbe:
+    name: str
+    available: bool
+    path: str | None
+    version: str | None
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, str | bool | None]:
+        return {
+            "name": self.name,
+            "available": self.available,
+            "path": self.path,
+            "version": self.version,
+            "error": self.error,
+        }
+
+
+@dataclass(frozen=True)
+class PythonEnvProbe:
+    python_path: str | None
+    available: bool
+    version: str | None
+    required_modules: dict[str, bool]
+    error: str | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "python_path": self.python_path,
+            "available": self.available,
+            "version": self.version,
+            "required_modules": self.required_modules,
+            "error": self.error,
+        }
+
+
 def _resolve_executable(env_name: str, command_name: str, fallback: Path | None) -> str:
     override = os.environ.get(env_name)
     if override:
@@ -116,12 +152,44 @@ def _get_serial() -> str | None:
     return _read_config_value("serial")
 
 
+def resolve_runtime_python_path() -> str | None:
+    override = os.environ.get("DROIDRUN_PYTHON")
+    if override:
+        return override
+
+    fallback = Path.home() / "droidrun-env" / "bin" / "python"
+    if fallback.exists():
+        return str(fallback)
+
+    return shutil.which("python3") or shutil.which("python")
+
+
+def resolve_droidrun_bin_path() -> str | None:
+    override = os.environ.get("DROIDRUN_BIN")
+    if override:
+        return override
+
+    fallback = Path.home() / "droidrun-env" / "bin" / "droidrun"
+    if fallback.exists():
+        return str(fallback)
+
+    return shutil.which("droidrun")
+
+
+def resolve_adb_bin_path() -> str | None:
+    override = os.environ.get("ADB_BIN")
+    if override:
+        return override
+
+    fallback = Path("/opt/homebrew/bin/adb")
+    if fallback.exists():
+        return str(fallback)
+
+    return shutil.which("adb")
+
+
 def adb_base_cmd() -> list[str]:
-    adb_bin = _resolve_executable(
-        "ADB_BIN",
-        "adb",
-        Path("/opt/homebrew/bin/adb"),
-    )
+    adb_bin = _resolve_executable("ADB_BIN", "adb", Path("/opt/homebrew/bin/adb"))
     serial = _get_serial()
     cmd = [adb_bin]
     if serial:
@@ -131,6 +199,125 @@ def adb_base_cmd() -> list[str]:
 
 def run_capture(cmd: list[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, capture_output=True, text=True, check=False)
+
+
+def env_flag(*names: str) -> tuple[bool, str | None]:
+    for name in names:
+        if os.environ.get(name, "").strip():
+            return True, name
+    return False, None
+
+
+def llm_providers_from_config() -> tuple[str, ...]:
+    if not CONFIG_PATH.exists():
+        return ()
+
+    providers: list[str] = []
+    in_llm_profiles = False
+    for raw_line in CONFIG_PATH.read_text(encoding="utf-8").splitlines():
+        line = raw_line.rstrip()
+        if not line.strip():
+            continue
+        if not line.startswith(" ") and not line.startswith("\t"):
+            in_llm_profiles = line.strip() == "llm_profiles:"
+            continue
+        if not in_llm_profiles:
+            continue
+        if re.match(r"^\s{2}[A-Za-z0-9_]+:\s*$", line):
+            continue
+        match = re.match(r"^\s{4}provider:\s*(.+?)\s*$", line)
+        if match:
+            providers.append(match.group(1).strip())
+    return tuple(dict.fromkeys(providers))
+
+
+def _first_output_line(text: str) -> str | None:
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped:
+            return stripped
+    return None
+
+
+def command_probe(
+    name: str,
+    path: str | None,
+    version_args: list[str],
+) -> CommandProbe:
+    if not path:
+        return CommandProbe(name=name, available=False, path=None, version=None, error="not found")
+
+    resolved_path = path
+    if not Path(path).exists():
+        resolved_path = shutil.which(path)
+        if not resolved_path:
+            return CommandProbe(name=name, available=False, path=None, version=None, error="not found")
+
+    result = run_capture([resolved_path] + version_args)
+    version = _first_output_line(result.stdout) or _first_output_line(result.stderr)
+    error = None
+    if result.returncode != 0:
+        error = version or f"exit code {result.returncode}"
+    return CommandProbe(
+        name=name,
+        available=result.returncode == 0,
+        path=resolved_path,
+        version=version,
+        error=error,
+    )
+
+
+def runtime_python_probe() -> PythonEnvProbe:
+    python_path = resolve_runtime_python_path()
+    if not python_path:
+        return PythonEnvProbe(
+            python_path=None,
+            available=False,
+            version=None,
+            required_modules={},
+            error="runtime python not found",
+        )
+
+    code = """
+import importlib.util, json, platform
+modules = ["droidrun", "whisper", "sounddevice", "numpy", "scipy", "pynput"]
+print(json.dumps({
+    "version": platform.python_version(),
+    "modules": {name: importlib.util.find_spec(name) is not None for name in modules},
+}))
+""".strip()
+    result = run_capture([python_path, "-c", code])
+    if result.returncode != 0:
+        return PythonEnvProbe(
+            python_path=python_path,
+            available=False,
+            version=None,
+            required_modules={},
+            error=_first_output_line(result.stderr) or _first_output_line(result.stdout),
+        )
+
+    try:
+        payload = json.loads(result.stdout.strip())
+    except json.JSONDecodeError:
+        return PythonEnvProbe(
+            python_path=python_path,
+            available=False,
+            version=None,
+            required_modules={},
+            error="could not parse python probe output",
+        )
+
+    modules = payload.get("modules", {})
+    if not isinstance(modules, dict):
+        modules = {}
+    normalized_modules = {str(name): bool(ok) for name, ok in modules.items()}
+    return PythonEnvProbe(
+        python_path=python_path,
+        available=True,
+        version=str(payload.get("version", "")).strip() or None,
+        required_modules=normalized_modules,
+        error=None,
+    )
 
 
 def _extract_json_payload(raw_output: str) -> Any:
@@ -296,12 +483,27 @@ def _app_matches_expected(expected_app_name: str | None, foreground: ForegroundA
     if not expected:
         return False
 
+    expected_package = None
+    for item in KNOWN_APP_COMPATIBILITY:
+        if expected == _normalize(item["name"]):
+            expected_package = item["package"]
+            break
+
     candidates = [
         _normalize(foreground.title),
         _normalize(foreground.package_name),
         _normalize(foreground.activity_name),
     ]
-    return any(expected and expected in candidate for candidate in candidates if candidate)
+    if any(expected and expected in candidate for candidate in candidates if candidate):
+        return True
+
+    if expected_package:
+        if foreground.package_name == expected_package:
+            return True
+        activity_name = foreground.activity_name or ""
+        if activity_name.startswith(expected_package):
+            return True
+    return False
 
 
 def classify_app_compatibility(
@@ -368,17 +570,23 @@ def probe_expected_app_readability(expected_app_name: str) -> tuple[bool, str | 
     return True, f"app_ui_unreadable: {expected_app_name}"
 
 
-def open_app_via_helper(app_name: str) -> bool:
-    override = os.environ.get("DROIDRUN_PYTHON")
-    if override:
-        python_bin = override
-    else:
-        fallback = Path.home() / "droidrun-env" / "bin" / "python"
-        if fallback.exists():
-            python_bin = str(fallback)
-        else:
-            python_bin = _resolve_executable("DROIDRUN_PYTHON", "python", None)
-
+def open_app_via_helper_result(app_name: str) -> tuple[bool, str | None]:
+    python_bin = resolve_runtime_python_path()
+    if not python_bin:
+        return False, "runtime python not found"
     helper_script = Path(__file__).resolve().parent / "droidrun_open_app.py"
-    result = subprocess.run([python_bin, str(helper_script), app_name], check=False)
-    return result.returncode == 0
+    result = run_capture([python_bin, str(helper_script), app_name])
+    if result.returncode == 0:
+        return True, None
+
+    detail = _first_output_line(result.stderr) or _first_output_line(result.stdout)
+    return False, detail or f"exit code {result.returncode}"
+
+
+def open_app_via_helper(app_name: str) -> bool:
+    ok, _ = open_app_via_helper_result(app_name)
+    return ok
+
+
+def google_genai_key_status() -> tuple[bool, str | None]:
+    return env_flag("GOOGLE_API_KEY", "GEMINI_API_KEY")
