@@ -16,6 +16,7 @@ from voice_agent.diagnostics import (
     open_app_via_helper_result,
     resolve_adb_bin_path,
     resolve_droidrun_bin_path,
+    run_fix_portal_script,
     runtime_python_probe,
 )
 from voice_agent.openai_tts import openai_tts_enabled
@@ -61,6 +62,7 @@ def _probe_llm_and_keys(persona_provider: str, voice_enabled: bool) -> dict[str,
 def _build_snapshot(
     expected_app_name: str | None,
     open_app_result: dict[str, Any] | None,
+    applied_fixes: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     persona = load_persona_config()
     readiness = inspect_current_app_state(expected_app_name)
@@ -100,10 +102,34 @@ def _build_snapshot(
             "likely_unreadable": readiness.likely_unreadable,
         },
         "app_open": open_app_result,
+        "applied_fixes": applied_fixes or [],
+        "fix_commands": [],
         "recommendations": [],
     }
+    snapshot["fix_commands"] = _build_fix_commands(snapshot)
     snapshot["recommendations"] = _build_recommendations(snapshot)
     return snapshot
+
+
+def _build_fix_commands(snapshot: dict[str, Any]) -> list[str]:
+    commands: list[str] = []
+    portal = snapshot["portal"]
+    providers = snapshot["providers"]
+    app_probe = snapshot["app_probe"]
+
+    if portal["accessibility_enabled"] is False or not portal["portal_service_enabled"]:
+        commands.append("./fix_portal.sh")
+    elif portal["status"] == "error" and portal["error"]:
+        commands.append("./fix_portal.sh")
+    elif portal["status"] == "no_active_window" and not app_probe["expected_app_name"]:
+        commands.append("./run_doctor.sh --app 小红书 --open-app")
+
+    if providers["google_genai"]["required"] and not providers["google_genai"]["ok"]:
+        commands.append("export GEMINI_API_KEY='你的 Gemini API key'")
+    if providers["openai_tts"]["required"] and not providers["openai_tts"]["ok"]:
+        commands.append("export OPENAI_API_KEY='你的 OpenAI API key'")
+
+    return commands
 
 
 def _build_recommendations(snapshot: dict[str, Any]) -> list[str]:
@@ -180,6 +206,22 @@ def _build_recommendations(snapshot: dict[str, Any]) -> list[str]:
     return recommendations
 
 
+def _apply_safe_fixes(snapshot: dict[str, Any]) -> list[dict[str, Any]]:
+    portal = snapshot["portal"]
+    applied: list[dict[str, Any]] = []
+
+    if portal["accessibility_enabled"] is False or not portal["portal_service_enabled"]:
+        ok, detail = run_fix_portal_script()
+        applied.append({"name": "fix_portal", "ok": ok, "detail": detail})
+        return applied
+
+    if portal["status"] == "error" and portal["error"]:
+        ok, detail = run_fix_portal_script()
+        applied.append({"name": "fix_portal", "ok": ok, "detail": detail})
+
+    return applied
+
+
 def _status_mark(ok: bool) -> str:
     return "OK" if ok else "FAIL"
 
@@ -192,6 +234,8 @@ def _print_human(snapshot: dict[str, Any]) -> None:
     foreground = snapshot["foreground"]
     app_probe = snapshot["app_probe"]
     app_open = snapshot["app_open"]
+    applied_fixes = snapshot["applied_fixes"]
+    fix_commands = snapshot["fix_commands"]
 
     print("momo doctor")
     print(f"configured_serial: {snapshot['configured_serial'] or 'auto'}")
@@ -286,6 +330,17 @@ def _print_human(snapshot: dict[str, Any]) -> None:
             f"- open_app={_status_mark(app_open['ok'])}"
             f" detail={app_open['detail'] or '-'}"
         )
+    if applied_fixes:
+        for item in applied_fixes:
+            print(f"- applied_fix={item['name']} {_status_mark(item['ok'])} detail={item['detail']}")
+    print()
+
+    print("fix_commands")
+    if fix_commands:
+        for item in fix_commands:
+            print(f"- {item}")
+    else:
+        print("- none")
     print()
 
     print("recommendations")
@@ -301,6 +356,11 @@ if __name__ == "__main__":
         action="store_true",
         help="open the target app before checking readability",
     )
+    parser.add_argument(
+        "--fix",
+        action="store_true",
+        help="apply safe automatic fixes such as Portal recovery, then re-check",
+    )
     parser.add_argument("--json", action="store_true", help="print raw JSON")
     args = parser.parse_args()
 
@@ -314,6 +374,16 @@ if __name__ == "__main__":
             time.sleep(4.0)
 
     snapshot = _build_snapshot(args.app, open_app_result)
+    if args.fix:
+        applied_fixes = _apply_safe_fixes(snapshot)
+        if applied_fixes:
+            snapshot = _build_snapshot(args.app, open_app_result, applied_fixes=applied_fixes)
+        else:
+            snapshot = _build_snapshot(
+                args.app,
+                open_app_result,
+                applied_fixes=[{"name": "none", "ok": True, "detail": "no safe automatic fix was needed"}],
+            )
     if args.json:
         print(json.dumps(snapshot, ensure_ascii=False, indent=2))
     else:

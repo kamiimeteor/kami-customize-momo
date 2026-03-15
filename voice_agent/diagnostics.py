@@ -590,3 +590,15 @@ def open_app_via_helper(app_name: str) -> bool:
 
 def google_genai_key_status() -> tuple[bool, str | None]:
     return env_flag("GOOGLE_API_KEY", "GEMINI_API_KEY")
+
+
+def run_fix_portal_script() -> tuple[bool, str]:
+    script_path = PROJECT_ROOT / "fix_portal.sh"
+    if not script_path.exists():
+        return False, "fix_portal.sh not found"
+
+    result = run_capture([str(script_path)])
+    output = (result.stdout + "\n" + result.stderr).strip()
+    if result.returncode != 0:
+        return False, _first_output_line(output) or f"exit code {result.returncode}"
+    return True, _first_output_line(output) or "fix_portal.sh completed"

@@ -7,6 +7,7 @@ except ImportError:
 
 import json
 import re
+import uuid
 from collections import defaultdict
 from dataclasses import dataclass
 from datetime import datetime
@@ -21,6 +22,7 @@ HEARTBEAT_DIR = MEMORY_DIR / "heartbeat"
 FACTS_PATH = MEMORY_DIR / "facts.jsonl"
 LATEST_HEARTBEAT_PATH = HEARTBEAT_DIR / "latest.md"
 PROFILE_PATH = MEMORY_DIR / "profile.json"
+DELETE_MEMORY_FACT_TYPE = "memory_delete"
 
 SINGLE_VALUE_FACT_TYPES = {
     "preferred_name",
@@ -159,7 +161,19 @@ def extract_facts(text: str) -> list[dict[str, Any]]:
             }
         )
 
-    return facts
+    has_specific_fact = any(fact.get("type") != "remember" for fact in facts)
+    filtered: list[dict[str, Any]] = []
+    for fact in facts:
+        fact_type = str(fact.get("type", "")).strip()
+        value = str(fact.get("value", "")).strip()
+        if fact_type == "remember":
+            if "我什么" in value or "记住了什么" in cleaned:
+                continue
+            if has_specific_fact and value.startswith(("我喜欢", "我不喜欢", "以后叫我", "你可以叫我")):
+                continue
+        filtered.append(fact)
+
+    return filtered
 
 
 def append_fact(fact: dict[str, Any]) -> None:
@@ -173,6 +187,8 @@ def append_facts(facts: list[dict[str, Any]]) -> None:
     ensure_memory_dirs()
     with FACTS_PATH.open("a", encoding="utf-8") as f:
         for fact in facts:
+            if not fact.get("id"):
+                fact["id"] = f"fact_{uuid.uuid4().hex[:12]}"
             f.write(json.dumps(fact, ensure_ascii=False) + "\n")
     rebuild_memory_profile()
 
@@ -231,19 +247,200 @@ def _detect_preference_override(value: str) -> tuple[str, str] | None:
 def load_all_facts() -> list[dict[str, Any]]:
     ensure_memory_dirs()
     facts: list[dict[str, Any]] = []
+    needs_rewrite = False
     for line in FACTS_PATH.read_text(encoding="utf-8").splitlines():
         line = line.strip()
         if not line:
             continue
         try:
-            facts.append(json.loads(line))
+            fact = json.loads(line)
+            if isinstance(fact, dict) and not fact.get("id"):
+                fact["id"] = f"fact_{uuid.uuid4().hex[:12]}"
+                needs_rewrite = True
+            facts.append(fact)
         except json.JSONDecodeError:
             continue
+    if needs_rewrite:
+        FACTS_PATH.write_text(
+            "\n".join(json.dumps(fact, ensure_ascii=False) for fact in facts) + ("\n" if facts else ""),
+            encoding="utf-8",
+        )
     return facts
 
 
+def _fact_id(fact: dict[str, Any]) -> str | None:
+    value = fact.get("id")
+    if not value:
+        return None
+    return str(value).strip() or None
+
+
+def _is_ignorable_fact(fact: dict[str, Any]) -> bool:
+    fact_type = str(fact.get("type", "")).strip()
+    value = str(fact.get("value", "")).strip()
+    if fact_type == "remember" and ("我什么" in value or len(_canonical_item(value)) <= 2):
+        return True
+    return False
+
+
+def _active_facts(facts: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    deleted_ids: set[str] = set()
+    active: list[dict[str, Any]] = []
+    for fact in facts:
+        fact_type = str(fact.get("type", "")).strip()
+        if fact_type == DELETE_MEMORY_FACT_TYPE:
+            targets = fact.get("target_ids", [])
+            if isinstance(targets, list):
+                for target in targets:
+                    target_id = str(target).strip()
+                    if target_id:
+                        deleted_ids.add(target_id)
+            continue
+        active.append(fact)
+
+    return [
+        fact
+        for fact in active
+        if (_fact_id(fact) or "") not in deleted_ids and not _is_ignorable_fact(fact)
+    ]
+
+
+def list_active_facts(limit: int | None = None) -> list[dict[str, Any]]:
+    facts = _active_facts(load_all_facts())
+    facts.sort(
+        key=lambda fact: _parse_timestamp(str(fact.get("timestamp", ""))).timestamp(),
+        reverse=True,
+    )
+    if limit is None:
+        return facts
+    return facts[:limit]
+
+
+def _append_delete_fact(target_ids: list[str], reason: str) -> bool:
+    targets = [item.strip() for item in target_ids if item and item.strip()]
+    if not targets:
+        return False
+
+    append_fact(
+        {
+            "timestamp": _now().isoformat(timespec="seconds"),
+            "type": DELETE_MEMORY_FACT_TYPE,
+            "target_ids": targets,
+            "reason": reason,
+            "source": "manual",
+            "confidence": 1.0,
+        }
+    )
+    return True
+
+
+def delete_last_fact() -> dict[str, Any] | None:
+    facts = list_active_facts(limit=1)
+    if not facts:
+        return None
+    target = facts[0]
+    target_id = _fact_id(target)
+    if not target_id:
+        return None
+    _append_delete_fact([target_id], "user requested forgetting the last memory fact")
+    return target
+
+
+def delete_facts_by_query(query: str) -> list[dict[str, Any]]:
+    normalized_query = _canonical_item(query)
+    if not normalized_query:
+        return []
+
+    matches: list[dict[str, Any]] = []
+    target_ids: list[str] = []
+    for fact in list_active_facts():
+        haystacks = [
+            _canonical_item(str(fact.get("value", ""))),
+            _canonical_item(str(fact.get("source_text", ""))),
+            _canonical_item(str(fact.get("reason", ""))),
+        ]
+        if any(normalized_query and normalized_query in haystack for haystack in haystacks if haystack):
+            target_id = _fact_id(fact)
+            if not target_id:
+                continue
+            matches.append(fact)
+            target_ids.append(target_id)
+
+    if not target_ids:
+        return []
+
+    _append_delete_fact(target_ids, f"user requested forgetting memory matching: {query}")
+    return matches
+
+
+def replace_fact_value(query: str, new_value: str) -> tuple[list[dict[str, Any]], dict[str, Any] | None]:
+    matches = delete_facts_by_query(query)
+    if not matches:
+        return [], None
+
+    newest = matches[0]
+    replacement = {
+        "timestamp": _now().isoformat(timespec="seconds"),
+        "type": str(newest.get("type", "")).strip() or "remember",
+        "value": new_value.strip(),
+        "source_text": f"replace {query} -> {new_value}",
+        "source": "manual",
+        "confidence": 1.0,
+        "reason": "user requested memory replacement",
+    }
+    append_fact(replacement)
+    return matches, replacement
+
+
+def memory_summary_text() -> str:
+    profile = load_memory_profile()
+    parts: list[str] = []
+    seen: set[str] = set()
+
+    def _push(text: str) -> None:
+        normalized = _canonical_item(text)
+        if not normalized or normalized in seen:
+            return
+        seen.add(normalized)
+        parts.append(text)
+
+    preferred_name = str(profile.get("preferred_name") or "").strip()
+    if preferred_name:
+        _push(f"我记得你喜欢我叫你{preferred_name}")
+
+    for key, label in (
+        ("likes", "你喜欢"),
+        ("dislikes", "你不喜欢"),
+        ("communication_style", "你希望我说话"),
+        ("working_style", "你希望我做事"),
+        ("remember", "我还记着"),
+    ):
+        values = profile.get(key, [])
+        if not isinstance(values, list):
+            continue
+        for value in values[:2]:
+            text = str(value).strip()
+            if text:
+                if key == "remember" and ("我什么" in text or "记住了什么" in text):
+                    continue
+                _push(f"{label}{text}")
+
+    overrides = profile.get("preference_overrides", {})
+    if isinstance(overrides, dict):
+        for facet, item in list(overrides.items())[:3]:
+            if not isinstance(item, dict):
+                continue
+            value = str(item.get("value", "")).strip()
+            if value:
+                _push(f"{facet} 现在是 {value}")
+
+    if not parts:
+        return "我现在记住的还不多。"
+    return "；".join(parts[:5]) + "。"
+
+
 def rebuild_memory_profile() -> dict[str, Any]:
-    facts = load_all_facts()
+    facts = _active_facts(load_all_facts())
     profile: dict[str, Any] = {
         "updated_at": _now().isoformat(timespec="seconds"),
         "preferred_name": None,
@@ -281,6 +478,9 @@ def rebuild_memory_profile() -> dict[str, Any]:
     for fact in valid_facts:
         fact_type = str(fact.get("type", "")).strip()
         value = str(fact.get("value", "")).strip()
+
+        if fact_type == "remember" and ("我什么" in value or len(_canonical_item(value)) <= 2):
+            continue
 
         if fact_type in SINGLE_VALUE_FACT_TYPES:
             previous = single_winners.get(fact_type)
@@ -451,7 +651,7 @@ def load_recent_daily_entries(limit: int = 20) -> list[str]:
 
 def load_recent_facts(limit: int = 20) -> list[dict[str, Any]]:
     facts: list[dict[str, Any]] = []
-    for fact in reversed(load_all_facts()):
+    for fact in reversed(_active_facts(load_all_facts())):
         facts.append(fact)
         if len(facts) >= limit:
             break

@@ -149,6 +149,12 @@ Run a one-shot health check:
 ./run_doctor.sh
 ```
 
+Apply safe automatic fixes and then re-check:
+
+```bash
+./run_doctor.sh --fix
+```
+
 The doctor now checks:
 
 - runtime Python path and version
@@ -225,11 +231,30 @@ Doctor examples:
 
 ```bash
 ./run_doctor.sh
+./run_doctor.sh --fix
 ./run_doctor.sh --app 微信
 ./run_doctor.sh --app 小红书 --open-app
 ```
 
 The last section of the output is `recommendations`, which tells you the next concrete fix instead of just printing raw state.
+`fix_commands` lists exact commands, and `--fix` will only run safe automatic repair actions such as Portal recovery.
+
+Memory control examples:
+
+```bash
+python3 -m momo_cli.memory_manage summary
+python3 -m momo_cli.memory_manage profile
+python3 -m momo_cli.memory_manage forget-last
+python3 -m momo_cli.memory_manage forget 冰美式
+python3 -m momo_cli.memory_manage replace 卡米 卡总
+```
+
+You can also say these directly to momo:
+
+- `你现在记住了我什么`
+- `忘掉刚才那条`
+- `忘掉关于冰美式的记忆`
+- `把关于卡米的记忆改成卡总`
 
 ## Troubleshooting
 
